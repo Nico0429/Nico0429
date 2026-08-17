@@ -2,7 +2,7 @@ name: Contribution scan
 
 on:
   schedule:
-    # 03:20 UTC daily (05:20 SAST). Avoid :00 — that's when Actions queues
+    # 03:20 UTC daily (05:20 SAST). Avoid :00 - that's when Actions queues
     # are busiest and scheduled runs get delayed the most.
     - cron: "20 3 * * *"
   workflow_dispatch: {}
@@ -28,7 +28,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
       - name: Install dependencies
         run: pip install "requests>=2.31" "Pillow>=10.0"
@@ -64,7 +63,7 @@ jobs:
           git add ./*.svg
 
           if git diff --cached --quiet; then
-            echo "No change in output — nothing to publish."
+            echo "No change in output - nothing to publish."
             exit 0
           fi
 
