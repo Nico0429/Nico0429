@@ -1,0 +1,72 @@
+name: Contribution scan
+
+on:
+  schedule:
+    # 03:20 UTC daily (05:20 SAST). Avoid :00 — that's when Actions queues
+    # are busiest and scheduled runs get delayed the most.
+    - cron: "20 3 * * *"
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "scripts/generate_scan.py"
+      - ".github/workflows/contribution-scan.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: contribution-scan
+  cancel-in-progress: true
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install "requests>=2.31" "Pillow>=10.0"
+
+      - name: Generate SVGs
+        run: |
+          mkdir -p dist
+          python scripts/generate_scan.py \
+            --user "${{ github.repository_owner }}" \
+            --mask avatar \
+            --out dist/scan.svg
+          python scripts/generate_scan.py \
+            --user "${{ github.repository_owner }}" \
+            --mask text --text NICO \
+            --out dist/scan-text.svg
+          ls -la dist/
+
+      - name: Publish to output branch
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage the artefacts somewhere the branch switch won't clobber.
+          mkdir -p /tmp/artefacts
+          cp dist/*.svg /tmp/artefacts/
+
+          # An orphan branch keeps a year of daily commits out of main's history.
+          git checkout --orphan output-tmp
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          find . -maxdepth 1 ! -name . ! -name .git -exec rm -rf {} +
+
+          cp /tmp/artefacts/*.svg .
+          git add ./*.svg
+
+          if git diff --cached --quiet; then
+            echo "No change in output — nothing to publish."
+            exit 0
+          fi
+
+          git commit -m "chore: contribution scan $(date -u +%Y-%m-%d)"
+          git push --force origin output-tmp:output
