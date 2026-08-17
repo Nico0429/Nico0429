@@ -2,9 +2,10 @@ name: Contribution scan
 
 on:
   schedule:
-    # 03:20 UTC daily (05:20 SAST). Avoid :00 - that's when Actions queues
-    # are busiest and scheduled runs get delayed the most.
-    - cron: "20 3 * * *"
+    # Every 2 hours at :17. A README image can't fetch live data, so the
+    # closest thing to "live" is regenerating often. Off-the-hour because
+    # Actions queues are busiest at :00 and delay scheduled runs most.
+    - cron: "17 */2 * * *"
   workflow_dispatch: {}
   push:
     branches: [main]
@@ -33,6 +34,8 @@ jobs:
         run: pip install "requests>=2.31" "Pillow>=10.0"
 
       - name: Generate SVGs
+        env:
+          GITHUB_TOKEN: ${{ secrets.CONTRIB_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dist
           python scripts/generate_scan.py \
