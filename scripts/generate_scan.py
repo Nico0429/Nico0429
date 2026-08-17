@@ -35,7 +35,21 @@ ROWS = 7
 CELL = 11
 GAP = 3
 STEP = CELL + GAP
-PAD = 18
+
+# Chrome around the grid, matching GitHub's own calendar: weekday labels in a
+# left gutter, month labels above, legend and footnote below.
+PAD_LEFT = 36
+PAD_TOP = 26
+PAD_RIGHT = 16
+PAD_BOTTOM = 42
+
+LABEL = "#8b949e"
+FONT = ("ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', "
+        "Helvetica, Arial, sans-serif")
+# GitHub labels alternating weekdays only, to avoid crowding. Row 0 = Sunday.
+WEEKDAY_LABELS = {1: "Mon", 3: "Wed", 5: "Fri"}
+MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 # ---------------------------------------------------------------------------
 # Levels 1-4 are GitHub's own dark-mode contribution greens, so phase 1 reads
@@ -174,6 +188,87 @@ def fetch_calendar(user: str) -> list[Day]:
     return days
 
 
+def fetch_calendar_graphql(user: str, token: str) -> list[Day]:
+    """Authoritative source: GitHub's GraphQL contributionsCollection.
+
+    Preferred over scraping because it is documented, stable, and - when the
+    token belongs to the user - includes private contributions and reflects
+    today's activity without the indexing lag the public HTML calendar has.
+    """
+    query = """
+    query($login: String!) {
+      user(login: $login) {
+        contributionsCollection {
+          contributionCalendar {
+            totalContributions
+            weeks {
+              contributionDays {
+                date
+                weekday
+                contributionCount
+                contributionLevel
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    resp = requests.post(
+        "https://api.github.com/graphql",
+        json={"query": query, "variables": {"login": user}},
+        headers={
+            "Authorization": f"bearer {token}",
+            "User-Agent": "contribution-scan-generator",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+
+    if "errors" in payload:
+        raise RuntimeError(f"GraphQL errors: {payload['errors']}")
+
+    cal = payload["data"]["user"]["contributionsCollection"]["contributionCalendar"]
+    level_map = {
+        "NONE": 0,
+        "FIRST_QUARTILE": 1,
+        "SECOND_QUARTILE": 2,
+        "THIRD_QUARTILE": 3,
+        "FOURTH_QUARTILE": 4,
+    }
+
+    days: list[Day] = []
+    for col, week in enumerate(cal["weeks"]):
+        for day in week["contributionDays"]:
+            days.append(
+                Day(
+                    row=day["weekday"],
+                    col=col,
+                    level=level_map.get(day["contributionLevel"], 0),
+                    count=day["contributionCount"],
+                    date=day["date"],
+                )
+            )
+    return days
+
+
+def load_calendar(user: str, token: str | None) -> list[Day]:
+    """GraphQL when a token is available, scrape otherwise."""
+    if token:
+        try:
+            days = fetch_calendar_graphql(user, token)
+            print("  source: GraphQL API (authenticated)", file=sys.stderr)
+            return days
+        except Exception as exc:  # noqa: BLE001 - fall back rather than fail
+            print(f"  GraphQL failed ({exc}); falling back to scrape",
+                  file=sys.stderr)
+    days = fetch_calendar(user)
+    print("  source: public HTML calendar (may lag behind by up to an hour)",
+          file=sys.stderr)
+    return days
+
+
 # ---------------------------------------------------------------------------
 # Step 2 - build the mask grid.
 # ---------------------------------------------------------------------------
@@ -293,8 +388,8 @@ def build_svg(
 
     grid_w = cols * STEP - GAP
     grid_h = ROWS * STEP - GAP
-    width = grid_w + PAD * 2
-    height = grid_h + PAD * 2
+    width = PAD_LEFT + grid_w + PAD_RIGHT
+    height = PAD_TOP + grid_h + PAD_BOTTOM
 
     out: list[str] = []
     out.append(
@@ -331,8 +426,8 @@ def build_svg(
         t1 = column_window(col, cols, SWEEP_1)
         t2 = column_window(col, cols, SWEEP_2)
         for row in range(ROWS):
-            x = PAD + col * STEP
-            y = PAD + row * STEP
+            x = PAD_LEFT + col * STEP
+            y = PAD_TOP + row * STEP
             key = (row, col)
             c_level = commit_levels.get(key, 0)
             m_level = mask.get(key, 0)
@@ -374,8 +469,8 @@ def build_svg(
 
     # The beam. Two passes, parked off-canvas the rest of the time.
     beam_w = 16
-    x_start = PAD - beam_w
-    x_end = PAD + grid_w
+    x_start = PAD_LEFT - beam_w
+    x_end = PAD_LEFT + grid_w
     beam_times = [
         0.0, SWEEP_1[0], SWEEP_1[1], SWEEP_1[1] + 0.001,
         SWEEP_2[0], SWEEP_2[1], SWEEP_2[1] + 0.001, 1.0,
@@ -387,7 +482,7 @@ def build_svg(
     beam_op = [0, 0.95, 0.95, 0, 0.95, 0.95, 0, 0]
 
     out.append(
-        f'<rect y="{PAD - 3}" width="{beam_w}" height="{grid_h + 6}" '
+        f'<rect y="{PAD_TOP - 3}" width="{beam_w}" height="{grid_h + 6}" '
         f'fill="url(#beamGrad)" x="{x_start}">'
         f'<animate attributeName="x" values="{";".join(fmt(v) for v in beam_x)}" '
         f'keyTimes="{";".join(fmt(t) for t in beam_times)}" '
@@ -400,10 +495,74 @@ def build_svg(
 
     # Scanline texture, faint.
     out.append('<g opacity="0.05" fill="#ffffff">')
-    yy = PAD
-    while yy < PAD + grid_h:
-        out.append(f'<rect x="{PAD}" y="{fmt(yy)}" width="{grid_w}" height="1"/>')
+    yy = PAD_TOP
+    while yy < PAD_TOP + grid_h:
+        out.append(
+            f'<rect x="{PAD_LEFT}" y="{fmt(yy)}" width="{grid_w}" height="1"/>'
+        )
         yy += 3
+    out.append("</g>")
+
+    # ---- Chrome: weekday gutter, month row, legend, footnote -------------
+    # Drawn last so it layers above the beam, and deliberately un-animated:
+    # the labels are reference furniture, not part of the reveal.
+    out.append(
+        f'<g font-family="{FONT}" font-size="10" fill="{LABEL}">'
+    )
+
+    for row, name in WEEKDAY_LABELS.items():
+        # +9 nudges the baseline to the visual centre of an 11px cell.
+        ty = PAD_TOP + row * STEP + 9
+        out.append(
+            f'<text x="{PAD_LEFT - 8}" y="{ty}" text-anchor="end">{name}</text>'
+        )
+
+    # Month labels sit above the first column in which that month appears.
+    first_date_in_col: dict[int, str] = {}
+    for d in days:
+        cur = first_date_in_col.get(d.col)
+        if cur is None or d.date < cur:
+            first_date_in_col[d.col] = d.date
+
+    prev_month = None
+    for col in range(cols):
+        iso = first_date_in_col.get(col)
+        if not iso:
+            continue
+        month = int(iso[5:7])
+        if month != prev_month:
+            out.append(
+                f'<text x="{PAD_LEFT + col * STEP}" y="{PAD_TOP - 9}">'
+                f"{MONTH_NAMES[month - 1]}</text>"
+            )
+            prev_month = month
+
+    # Footnote, bottom-left.
+    foot_y = PAD_TOP + grid_h + 26
+    out.append(
+        f'<text x="{PAD_LEFT}" y="{foot_y}">'
+        f"Learn how we count contributions</text>"
+    )
+
+    # Legend, bottom-right: Less [0..4] More.
+    sq = 10
+    sq_gap = 3
+    n_sw = 5
+    legend_w = 30 + n_sw * (sq + sq_gap) + 34
+    lx = PAD_LEFT + grid_w - legend_w
+    ly = foot_y
+
+    out.append(f'<text x="{lx}" y="{ly}">Less</text>')
+    swatch_x = lx + 28
+    for level in range(n_sw):
+        colour = EMPTY if level == 0 else COMMIT_COLORS[level]
+        out.append(
+            f'<rect x="{swatch_x}" y="{ly - sq + 2}" width="{sq}" '
+            f'height="{sq}" rx="2" fill="{colour}"/>'
+        )
+        swatch_x += sq + sq_gap
+    out.append(f'<text x="{swatch_x + 3}" y="{ly}">More</text>')
+
     out.append("</g>")
 
     out.append("</svg>")
@@ -424,10 +583,17 @@ def main() -> int:
     p.add_argument("--image", help="local path or URL, for --mask image")
     p.add_argument("--text", default=None, help="for --mask text; defaults to the handle")
     p.add_argument("--duration", type=float, default=14.0, help="loop length in seconds")
+    p.add_argument(
+        "--token",
+        default=None,
+        help="GitHub token; also read from GITHUB_TOKEN / GH_TOKEN. Enables the "
+             "GraphQL source, which avoids the public calendar's indexing lag.",
+    )
     args = p.parse_args()
 
     print(f"Fetching calendar for {args.user}...", file=sys.stderr)
-    days = fetch_calendar(args.user)
+    token = args.token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    days = load_calendar(args.user, token)
     cols = max(d.col for d in days) + 1
     total = sum(d.count for d in days)
     active = sum(1 for d in days if d.count > 0)
