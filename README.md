@@ -2,3 +2,4 @@
 
 ### Hi, I'm Nico
 
+CS + Mathematical Statistics | Honours student @ NMU | building ML pipelines and things I probably didn't need to build
